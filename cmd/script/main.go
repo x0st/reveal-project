@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -25,10 +26,11 @@ func main() {
 
 	core.MustNotBeEmpty("'host' must not be empty", *argHost)
 	core.MustNotBeEmpty("'ips' must not be empty", *argIps)
-	core.MustNotBeEmptyEither("'url' or 'look-for-text' must not be empty", *argUrl, *argLookForText)
 
-	ctx := context.Background()
-	filePrefix := "cf_" + time.Now().Format("20060102_150405")
+	argUrlParsed, err := url.Parse(*argUrl)
+	if err != nil {
+		_ = core.Fail(fmt.Errorf("malformed url: %v", err))
+	}
 
 	ipsToCheck, err := core.IPParseRanges(*argIps)
 	if err != nil {
@@ -41,14 +43,17 @@ func main() {
 	}
 	fmt.Printf("%d IPs to be checked\n", len(ipsToCheck))
 
+	ctx := context.Background()
+	filePrefix := "cf_" + time.Now().Format("20060102_150405")
+
 	http.DefaultClient.Transport = &http.Transport{
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		DisableKeepAlives: true,
 	}
 
 	var desiredResponse = []byte(*argLookForText)
-	if *argUrl != "" {
-		desiredResponse, err = makeHttpRequest(time.Duration(*argTimeout)*time.Second, "", "", *argUrl)
+	if *argLookForText == "" {
+		desiredResponse, err = makeHttpRequest(time.Duration(*argTimeout)*time.Second, "", *argUrlParsed)
 		if err != nil {
 			_ = core.Fail(fmt.Errorf("error grabbing desired response: %v", err))
 			return
@@ -79,7 +84,11 @@ func main() {
 				return parallel.Run(func() error {
 					_, _ = fileCheckedIps.WriteString(ipsToCheck[i] + "\n")
 
-					responseBody, errMakeHttpRequest := makeHttpRequest(time.Duration(*argTimeout)*time.Second, ipsToCheck[i], *argHost, "")
+					urlForRequest := *argUrlParsed
+					urlForRequest.Scheme = "http"
+					urlForRequest.Host = ipsToCheck[i] + ":80"
+
+					responseBody, errMakeHttpRequest := makeHttpRequest(time.Duration(*argTimeout)*time.Second, *argHost, urlForRequest)
 					if errMakeHttpRequest != nil {
 						chanErrors <- [2]string{ipsToCheck[i], errMakeHttpRequest.Error()}
 						numIpsErrored.Add(1)
@@ -136,19 +145,12 @@ func main() {
 	time.Sleep(time.Second * 11)
 }
 
-func makeHttpRequest(timeout time.Duration, ip, host, url string) ([]byte, error) {
+func makeHttpRequest(timeout time.Duration, host string, url url.URL) ([]byte, error) {
 	ctx, ctxCancel := context.WithTimeout(context.Background(), timeout)
 	defer ctxCancel()
 
-	var request *http.Request
-	if ip != "" {
-		request, _ = http.NewRequestWithContext(ctx, "GET", "http://"+ip+":80", nil)
-		request.Header.Set("Host", host)
-	} else if url != "" {
-		request, _ = http.NewRequestWithContext(ctx, "GET", url, nil)
-	} else {
-		return nil, core.Fail(fmt.Errorf("IP and URL are missing"))
-	}
+	request, _ := http.NewRequestWithContext(ctx, "GET", url.String(), nil)
+	request.Header.Set("Host", host)
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
