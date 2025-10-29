@@ -82,6 +82,8 @@ func main() {
 		for i := range ipsToCheck {
 			errRun := func() error {
 				return parallel.Run(func() error {
+					defer numIpsChecked.Add(1)
+
 					_, _ = fileCheckedIps.WriteString(ipsToCheck[i] + "\n")
 
 					urlForRequest := *argUrlParsed
@@ -89,6 +91,7 @@ func main() {
 					urlForRequest.Host = ipsToCheck[i] + ":80"
 
 					responseBody, errMakeHttpRequest := makeHttpRequest(time.Duration(*argTimeout)*time.Second, *argHost, urlForRequest)
+
 					if errMakeHttpRequest != nil {
 						chanErrors <- [2]string{ipsToCheck[i], errMakeHttpRequest.Error()}
 						numIpsErrored.Add(1)
@@ -100,7 +103,6 @@ func main() {
 						_, _ = fileFoundIps.WriteString(ipsToCheck[i] + "\n")
 					}
 
-					numIpsChecked.Add(1)
 					return nil
 				})
 			}()
